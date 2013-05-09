@@ -1,7 +1,14 @@
 package com.vaadin.addon.responsive.client;
 
-import com.google.gwt.core.client.JavaScriptObject;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import com.google.gwt.dom.client.Element;
+import com.google.gwt.regexp.shared.MatchResult;
+import com.google.gwt.regexp.shared.RegExp;
+import com.google.gwt.user.client.DOM;
 import com.vaadin.addon.responsive.Responsive;
 import com.vaadin.client.LayoutManager;
 import com.vaadin.client.ServerConnector;
@@ -11,379 +18,360 @@ import com.vaadin.client.ui.layout.ElementResizeEvent;
 import com.vaadin.client.ui.layout.ElementResizeListener;
 import com.vaadin.shared.ui.Connect;
 
+import elemental.client.Browser;
+import elemental.css.CSSImportRule;
+import elemental.css.CSSRule;
+import elemental.css.CSSRuleList;
+import elemental.css.CSSStyleRule;
+import elemental.css.CSSStyleSheet;
+import elemental.dom.Document;
+import elemental.stylesheets.StyleSheetList;
+
 /**
  * The client side connector for the Responsive extension.
  * 
- * TODO It might make more sense to just make this a pure JS extension, since
- * the amount of native code in this class is near 100%.
- * 
  * @author jouni@vaadin.com
+ * @author teemu@vaadin.com
  * 
  */
 @Connect(Responsive.class)
 public class ResponsiveConnector extends AbstractExtensionConnector implements
-		ElementResizeListener {
+        ElementResizeListener {
 
-	private static final long serialVersionUID = -7960943137494057105L;
+    private static final long serialVersionUID = -7960943137494057105L;
 
-	/**
-	 * The target component which we will monitor for width changes
-	 */
-	protected AbstractComponentConnector target;
+    /**
+     * The target component which we will monitor for width changes
+     */
+    protected AbstractComponentConnector target;
 
-	/**
-	 * All the width breakpoints found for this particular instance
-	 */
-	protected JavaScriptObject widthBreakpoints;
+    /**
+     * All the width breakpoints found for this particular instance
+     */
+    protected List<BreakPoint> widthBreakpoints = new ArrayList<BreakPoint>();
 
-	/**
-	 * All the height breakpoints found for this particular instance
-	 */
-	protected JavaScriptObject heightBreakpoints;
+    /**
+     * All the height breakpoints found for this particular instance
+     */
+    protected List<BreakPoint> heightBreakpoints = new ArrayList<BreakPoint>();
 
-	/**
-	 * All width-range breakpoints found from the style sheets on the page.
-	 * Common for all instances.
-	 */
-	protected static JavaScriptObject widthRangeCache;
+    /**
+     * All width-range breakpoints found from the style sheets on the page.
+     * Common for all instances.
+     */
+    protected static Set<BreakPoint> widthRangeCache;
 
-	/**
-	 * All height-range breakpoints found from the style sheets on the page.
-	 * Common for all instances.
-	 */
-	protected static JavaScriptObject heightRangeCache;
+    /**
+     * All height-range breakpoints found from the style sheets on the page.
+     * Common for all instances.
+     */
+    protected static Set<BreakPoint> heightRangeCache;
 
-	@Override
-	protected void extend(ServerConnector target) {
-		// Initialize cache if not already done
-		if (widthRangeCache == null) {
-			searchForBreakPoints();
-		}
+    private String currentWidthRanges;
+    private String currentHeightRanges;
 
-		this.target = (AbstractComponentConnector) target;
+    @Override
+    protected void extend(ServerConnector target) {
+        // Initialize cache if not already done
+        if (widthRangeCache == null) {
+            widthRangeCache = new HashSet<BreakPoint>();
+            heightRangeCache = new HashSet<BreakPoint>();
+            searchForBreakPoints();
+        }
 
-		// Construct the list of selectors we should match against in the
-		// range selectors
-		String primaryStyle = this.target.getState().primaryStyleName;
-		StringBuilder selectors = new StringBuilder();
-		selectors.append("." + primaryStyle);
+        this.target = (AbstractComponentConnector) target;
 
-		if (this.target.getState().styles != null
-				&& this.target.getState().styles.size() > 0) {
-			for (String style : this.target.getState().styles) {
-				// TODO decide all the combinations we want to support
-				selectors.append(",." + style);
-				selectors.append(",." + primaryStyle + "." + style);
-				selectors.append(",." + style + "." + primaryStyle);
-				selectors.append(",." + primaryStyle + "-" + style);
-			}
-		}
+        // Construct the list of selectors we should match against in the
+        // range selectors
+        String primaryStyle = this.target.getState().primaryStyleName;
+        StringBuilder selectors = new StringBuilder();
+        selectors.append("." + primaryStyle);
 
-		// Allow the ID to be used as the selector as well for ranges
-		if (this.target.getState().id != null) {
-			selectors.append(",#" + this.target.getState().id);
-		}
+        if (this.target.getState().styles != null
+                && this.target.getState().styles.size() > 0) {
+            for (String style : this.target.getState().styles) {
+                // TODO decide all the combinations we want to support
+                selectors.append(",." + style);
+                selectors.append(",." + primaryStyle + "." + style);
+                selectors.append(",." + style + "." + primaryStyle);
+                selectors.append(",." + primaryStyle + "-" + style);
+            }
+        }
 
-		// Get any breakpoints from the styles defined for this widget
-		getBreakPointsFor(selectors.toString());
+        // Allow the ID to be used as the selector as well for ranges
+        if (this.target.getState().id != null) {
+            selectors.append(",#" + this.target.getState().id);
+        }
 
-		// Start listening for size changes
-		LayoutManager.get(getConnection()).addElementResizeListener(
-				this.target.getWidget().getElement(), this);
-	}
+        // Get any breakpoints from the styles defined for this widget
+        getBreakPointsFor(selectors.toString());
 
-	/**
-	 * Build a cache of all 'width-range' and 'height-range' attribute selectors
-	 * found in the stylesheets.
-	 */
-	private static native void searchForBreakPoints()
-	/*-{
-	
-	// Initialize variables
-	@com.vaadin.addon.responsive.client.ResponsiveConnector::widthRangeCache = [];
-	@com.vaadin.addon.responsive.client.ResponsiveConnector::heightRangeCache = [];
-	
-	var widthRanges = @com.vaadin.addon.responsive.client.ResponsiveConnector::widthRangeCache;
-	var heightRanges = @com.vaadin.addon.responsive.client.ResponsiveConnector::heightRangeCache;
-	
-	// Can't do squat if we can't parse stylesheets
-	if(!$doc.styleSheets)
-	    return null;
-	
-	var sheets = $doc.styleSheets;
-	
-	// Loop all stylesheets on the page and process them individually
-	for(var i = 0, len = sheets.length; i < len; i++) {
-	    var sheet = sheets[i];
-	    @com.vaadin.addon.responsive.client.ResponsiveConnector::searchStylesheetForBreakPoints(Lcom/google/gwt/core/client/JavaScriptObject;)(sheet);        
-	}
-	
-	// Only for debugging
-	// console.log("All breakpoints", widthRanges, heightRanges);
-	
-	}-*/;
+        // Start listening for size changes
+        LayoutManager.get(getConnection()).addElementResizeListener(
+                this.target.getWidget().getElement(), this);
+    }
 
-	/**
-	 * Process an individual stylesheet object. Any @import statements are
-	 * handled recursively. Regular rule declarations are searched for
-	 * 'width-range' and 'height-range' attribute selectors.
-	 * 
-	 * @param sheet
-	 */
-	private static native void searchStylesheetForBreakPoints(
-			final JavaScriptObject sheet)
-	/*-{
-	
-	// Inline variables for easier reading
-	var widthRanges = @com.vaadin.addon.responsive.client.ResponsiveConnector::widthRangeCache;
-	var heightRanges = @com.vaadin.addon.responsive.client.ResponsiveConnector::heightRangeCache;
-	
-	// Get all the rulesets from the stylesheet
-	var theRules = new Array();
-	var IE = $wnd.navigator.appName == "Microsoft Internet Explorer";
-	
-	if (sheet.cssRules) {
-	    theRules = sheet.cssRules
-	} else if (sheet.rules) {
-	    theRules = sheet.rules
-	}
-    
-	// Loop through the rulesets
-	for(var i = 0, len = theRules.length; i < len; i++) {
-	    var rule = theRules[i];
-	    
-	    if(rule.type == 3) {
-	        // @import rule, traverse recursively
-	        @com.vaadin.addon.responsive.client.ResponsiveConnector::searchStylesheetForBreakPoints(Lcom/google/gwt/core/client/JavaScriptObject;)(rule.styleSheet);
-	        
-	    } else if(rule.type == 1 || !rule.type) {
-	        // Regular selector rule
-	        
-	        // IE parses CSS like .class[attr="val"] into [attr="val"].class so we need to check for both
-	        
-	        // Pattern for matching [width-range] selectors
-	        var widths = IE? /\[width-range~?=["|'](.*)-(.*)["|']\]([\.|#]\S+)/i : /([\.|#]\S+)\[width-range~?=["|'](.*)-(.*)["|']\]/i;
-	        
-	        // Patter for matching [height-range] selectors
-	        var heights = IE? /\[height-range~?=["|'](.*)-(.*)["|']\]([\.|#]\S+)/i : /([\.|#]\S+)\[height-range~?=["|'](.*)-(.*)["|']\]/i;
-	        
-	        // Array of all of the separate selectors in this ruleset
-	        var haystack = rule.selectorText.toLowerCase().split(",");
-			
-	        // Loop all the selectors in this ruleset
-	        for(var k = 0, len2 = haystack.length; k < len2; k++) {
-	            var result;
+    /**
+     * Build a cache of all 'width-range' and 'height-range' attribute selectors
+     * found in the stylesheets.
+     */
+    private static void searchForBreakPoints() {
+        Document doc = Browser.getDocument();
+        StyleSheetList sheets = doc.getStyleSheets();
 
-	            // Check for width-range matches
-	            if(result = haystack[k].match(widths)) {
-	            	var selector = IE? result[3] : result[1]
-	                var min = IE? result[1] : result[2];
-	                var max = IE? result[2] : result[3];
-	                
-	                // Avoid adding duplicates
-	                var duplicate = false;
-	                for(var l = 0, len3 = widthRanges.length; l < len3; l++) {
-	                    var bp = widthRanges[l];
-	                    if(selector == bp[0] && min == bp[1] && max == bp[2]) {
-	                        duplicate = true;
-	                        break;
-	                    }
-	                }
-	                if(!duplicate) {
-	                    widthRanges.push([selector, min, max]);
-	                }
-	            }
-	            
-	            // Check for height-range matches
-	            if(result = haystack[k].match(heights)) {
-	            	var selector = IE? result[3] : result[1]
-	                var min = IE? result[1] : result[2];
-	                var max = IE? result[2] : result[3];
-	                
-	                // Avoid adding duplicates
-	                var duplicate = false;
-	                for(var l = 0, len3 = heightRanges.length; l < len3; l++) {
-	                    var bp = heightRanges[l];
-	                    if(selector == bp[0] && min == bp[1] && max == bp[2]) {
-	                        duplicate = true;
-	                        break;
-	                    }
-	                }
-	                if(!duplicate) {
-	                    heightRanges.push([selector, min, max]);
-	                }
-	            }
-	        }
-	    }
-	}
-	
-	}-*/;
+        if (sheets != null && sheets.getLength() > 0) {
+            for (int i = 0, len = sheets.getLength(); i < len; i++) {
+                if (sheets.item(i) instanceof CSSStyleSheet) {
+                    searchStylesheetForBreakPoints((CSSStyleSheet) sheets
+                            .item(i));
+                }
+            }
+        }
+    }
 
-	/**
-	 * Get all matching ranges from the cache for this particular instance.
-	 * 
-	 * @param selectors
-	 */
-	private native void getBreakPointsFor(final String selectors)
-	/*-{
-	
-	var selectors = selectors.split(",");
-	
-	var widthBreakpoints = this.@com.vaadin.addon.responsive.client.ResponsiveConnector::widthBreakpoints = [];
-	var heightBreakpoints = this.@com.vaadin.addon.responsive.client.ResponsiveConnector::heightBreakpoints = [];
-	
-	var widthRanges = @com.vaadin.addon.responsive.client.ResponsiveConnector::widthRangeCache;
-	var heightRanges = @com.vaadin.addon.responsive.client.ResponsiveConnector::heightRangeCache;
-	
-	for(var i = 0, len = widthRanges.length; i < len; i++) {
-	    var bp = widthRanges[i];
-	    for(var j = 0, len2 = selectors.length; j < len2; j++) {
-	        if(bp[0] == selectors[j])
-	            widthBreakpoints.push(bp);
-	    }
-	}
-	
-	for(var i = 0, len = heightRanges.length; i < len; i++) {
-	    var bp = heightRanges[i];
-	    for(var j = 0, len2 = selectors.length; j < len2; j++) {
-	        if(bp[0] == selectors[j])
-	            heightBreakpoints.push(bp);
-	    }
-	}
-	
-	// Only for debugging
-	// console.log("Breakpoints for", selectors.join(","), widthBreakpoints, heightBreakpoints);
-	
-	}-*/;
+    /**
+     * Process an individual stylesheet object. Any @import statements are
+     * handled recursively. Regular rule declarations are searched for
+     * 'width-range' and 'height-range' attribute selectors.
+     * 
+     * @param sheet
+     */
+    private static void searchStylesheetForBreakPoints(final CSSStyleSheet sheet) {
+        // Get all the rulesets from the stylesheet
+        CSSRuleList theRules = sheet.getCssRules();
 
-	private String currentWidthRanges;
-	private String currentHeightRanges;
+        // Loop through the rulesets
+        for (int i = 0, len = theRules.getLength(); i < len; i++) {
+            CSSRule rule = theRules.item(i);
 
-	@Override
-	public void onElementResize(ElementResizeEvent e) {
-		int width = e.getLayoutManager().getOuterWidth(e.getElement());
-		int height = e.getLayoutManager().getOuterHeight(e.getElement());
+            if (rule.getType() == CSSRule.IMPORT_RULE) {
+                // @import rule, traverse recursively
+                searchStylesheetForBreakPoints(((CSSImportRule) rule)
+                        .getStyleSheet());
 
-		// Loop through breakpoints and see which one applies to this width
-		currentWidthRanges = resolveBreakpoint("width", width, e.getElement());
+            } else if (rule.getType() == CSSRule.STYLE_RULE
+                    || rule.getType() == CSSRule.UNKNOWN_RULE) {
 
-		if (currentWidthRanges != "") {
-			this.target.getWidget().getElement()
-					.setAttribute("width-range", currentWidthRanges);
-		} else {
-			this.target.getWidget().getElement().removeAttribute("width-range");
-		}
+                // Pattern for matching [width-range] selectors
+                RegExp widths = getRegExp(Dimension.WIDTH);
+                // Patter for matching [height-range] selectors
+                RegExp heights = getRegExp(Dimension.HEIGHT);
 
-		// Loop through breakpoints and see which one applies to this height
-		currentHeightRanges = resolveBreakpoint("height", height,
-				e.getElement());
+                // Array of all of the separate selectors in this ruleset
+                String[] haystacks = ((CSSStyleRule) rule).getSelectorText()
+                        .toLowerCase().split(",");
 
-		if (currentHeightRanges != "") {
-			this.target.getWidget().getElement()
-					.setAttribute("height-range", currentHeightRanges);
-		} else {
-			this.target.getWidget().getElement()
-					.removeAttribute("height-range");
-		}
-	}
+                // Loop all the selectors in this ruleset
+                for (String haystack : haystacks) {
+                    MatchResult result;
 
-	private native String resolveBreakpoint(String which, int size,
-			Element element)
-	/*-{
+                    // Check for width-range matches
+                    result = widths.exec(haystack);
+                    if (result != null) {
+                        String selector = isIE() ? result.getGroup(3) : result
+                                .getGroup(1);
+                        String min = isIE() ? result.getGroup(1) : result
+                                .getGroup(2);
+                        String max = isIE() ? result.getGroup(2) : result
+                                .getGroup(3);
+                        widthRangeCache.add(new BreakPoint(selector, min, max));
+                    }
 
-	// Default to "width" breakpoints
-	var breakpoints = this.@com.vaadin.addon.responsive.client.ResponsiveConnector::widthBreakpoints;
-	
-	// Use height breakpoints if we're measuring the height
-	if(which == "height")
-		breakpoints = this.@com.vaadin.addon.responsive.client.ResponsiveConnector::heightBreakpoints;
-	
-	// Output string that goes into either the "width-range" or "height-range" attribute in the element
-	var ranges = "";
-	
-	// Loop the breakpoints
-	for(var i = 0, len = breakpoints.length; i < len; i++) {
-	    var bp = breakpoints[i];
-	    
-	    var min, max;
-	    
-	    // Do we need to calculate the pixel value?
-	    if(bp[1] != "0" && bp[1].indexOf("px") == -1) {
-	        min = @com.vaadin.addon.responsive.client.ResponsiveConnector::getPixelSize(Ljava/lang/String;Lcom/google/gwt/dom/client/Element;)(bp[1], element);
-	        // Calculation failed somehow, ignore this breakpoint
-	        // TODO inform the developer somehow?
-	        if(min == -1) continue;
-	    } else {
-	    	// No, we can use the pixel value directly
-	        min = parseInt(bp[1]);
-	    }
-	    
-	    // Do we need to calculate the pixel value?
-	    if(bp[2] && bp[2].indexOf("px") == -1) {
-	        max = @com.vaadin.addon.responsive.client.ResponsiveConnector::getPixelSize(Ljava/lang/String;Lcom/google/gwt/dom/client/Element;)(bp[2], element);
-	        // Calculation failed somehow, ignore this breakpoint
-	        // TODO inform the developer somehow?
-	        if(max == -1) continue;
-	    } else {
-	    	// No, we can use the pixel value directly
-	        max = parseInt(bp[2]);
-	    }
-	    
-	    if(max) {
-	        if(min <= size && size <= max) {
-	            ranges += " " + bp[1] + "-" + bp[2];
-	        }
-	    } else {
-	        if(min <= size) {
-	            ranges += " " + bp[1] + "-";
-	        }
-	    }
-	}
-	
-	// Trim the output and return it
-	return ranges.replace(/^\s+/, "");
-	
-	}-*/;
+                    // Check for height-range matches
+                    result = heights.exec(haystack);
+                    if (result != null) {
+                        String selector = isIE() ? result.getGroup(3) : result
+                                .getGroup(1);
+                        String min = isIE() ? result.getGroup(1) : result
+                                .getGroup(2);
+                        String max = isIE() ? result.getGroup(2) : result
+                                .getGroup(3);
+                        heightRangeCache
+                                .add(new BreakPoint(selector, min, max));
+                    }
+                }
+            }
+        }
+    }
 
-	private static native int getPixelSize(String size, Element context)
-	/*-{
-	
-	// Get the value and units from the size
-	var items = size.match(/^(\d+)?(\.\d+)?(.{1,3})/);
-	var val = (items[1] || 0) + (items[2] || "");
-	var unit = items[3].toLowerCase();
-	
-	// Use a temporay measuring element to get the computed size of the relative units 
-	if(unit == "em" || unit == "rem" || unit == "ex" || unit == "ch") {
-		var measure = $doc.createElement("div");
-		measure.style.width = size;
-		context.appendChild(measure);
-		var s = measure.offsetWidth;
-		context.removeChild(measure)
-		return s;
-	}
-	
-	// Handle all other absolute units with basic math
-	var ret = -1;
-	switch(unit) {
-		case "in":
-			ret = val * 96;
-			break;
-		case "cm":
-			ret = val * 37.8;
-			break;
-		case "mm":
-			ret = val * 3.78;
-			break;
-		case "pt":
-			ret = (val * 96) / 72;
-			break;
-		case "pc":
-			ret = ((val * 96) / 72) * 12;
-			break;
-	}
+    private static RegExp getRegExp(Dimension dimension) {
+        // IE parses CSS like .class[attr="val"] into [attr="val"].class
+        // so we need to check for both
+        String dim = dimension.toString().toLowerCase();
+        String regExpStr = "([\\.|#]\\S+)\\[" + dim
+                + "-range~?=[\\\"|'](.*)-(.*)[\\\"|']\\]";
+        if (isIE()) {
+            regExpStr = "\\[" + dim
+                    + "-range~?=[\\\"|'](.*)-(.*)[\\\"|']\\]([\\.|#]\\S+)";
+        }
+        return RegExp.compile(regExpStr, "i");
+    }
 
-	return ret;
-	
-	}-*/;
+    private static boolean isIE() {
+        return Browser.getWindow().getNavigator().getAppName() == "Microsoft Internet Explorer";
+    }
+
+    /**
+     * Get all matching ranges from the cache for this particular instance.
+     * 
+     * @param selectors
+     */
+    private void getBreakPointsFor(final String selectorsStr) {
+        String[] selectors = selectorsStr.split(",");
+        for (BreakPoint bp : widthRangeCache) {
+            for (String selector : selectors) {
+                if (bp.selector.equals(selector))
+                    widthBreakpoints.add(bp);
+            }
+        }
+        for (BreakPoint bp : heightRangeCache) {
+            for (String selector : selectors) {
+                if (bp.selector.equals(selector))
+                    heightBreakpoints.add(bp);
+            }
+        }
+    }
+
+    @Override
+    public void onElementResize(ElementResizeEvent e) {
+        int width = e.getLayoutManager().getOuterWidth(e.getElement());
+        int height = e.getLayoutManager().getOuterHeight(e.getElement());
+
+        // Loop through breakpoints and see which one applies to this width
+        currentWidthRanges = resolveBreakpoint(Dimension.WIDTH, width,
+                e.getElement());
+
+        if (currentWidthRanges != "") {
+            target.getWidget().getElement()
+                    .setAttribute("width-range", currentWidthRanges);
+        } else {
+            target.getWidget().getElement().removeAttribute("width-range");
+        }
+
+        // Loop through breakpoints and see which one applies to this height
+        currentHeightRanges = resolveBreakpoint(Dimension.HEIGHT, height,
+                e.getElement());
+
+        if (currentHeightRanges != "") {
+            target.getWidget().getElement()
+                    .setAttribute("height-range", currentHeightRanges);
+        } else {
+            target.getWidget().getElement().removeAttribute("height-range");
+        }
+    }
+
+    private String resolveBreakpoint(Dimension dimension, int size,
+            Element element) {
+
+        // Select width or height breakpoints
+        List<BreakPoint> breakpoints = (dimension == Dimension.WIDTH ? widthBreakpoints
+                : heightBreakpoints);
+
+        // Output string that goes into either the "width-range" or
+        // "height-range" attribute in the element
+        String ranges = "";
+
+        // Loop the breakpoints
+        for (BreakPoint bp : breakpoints) {
+            int min = 0;
+            int max = 0;
+
+            // Do we need to calculate the pixel value?
+            if (bp.min.length() > 0 && !bp.min.equals("0")) {
+                if (!bp.min.contains("px")) {
+                    min = getPixelSize(bp.min, element);
+                    // Calculation failed somehow, ignore this breakpoint
+                    // TODO inform the developer somehow?
+                    if (min == -1)
+                        continue;
+                } else {
+                    // No, we can use the pixel value directly
+                    if (bp.min.endsWith("px")) {
+                        min = Integer.parseInt(bp.min.substring(0,
+                                bp.min.length() - 2));
+                    } else {
+                        min = Integer.parseInt(bp.min);
+                    }
+                }
+            }
+
+            // Do we need to calculate the pixel value?
+            if (bp.max.length() > 0 && !bp.max.equals("0")) {
+                if (!bp.max.contains("px")) {
+                    max = getPixelSize(bp.max, element);
+                    // Calculation failed somehow, ignore this breakpoint
+                    // TODO inform the developer somehow?
+                    if (max == -1)
+                        continue;
+                } else {
+                    // No, we can use the pixel value directly
+                    if (bp.max.endsWith("px")) {
+                        max = Integer.parseInt(bp.max.substring(0,
+                                bp.max.length() - 2));
+                    } else {
+                        max = Integer.parseInt(bp.max);
+                    }
+                }
+            }
+
+            if (max > 0) {
+                if (min <= size && size <= max) {
+                    ranges += " " + bp.min + "-" + bp.max;
+                }
+            } else {
+                if (min <= size) {
+                    ranges += " " + bp.min + "-";
+                }
+            }
+        }
+
+        // Trim the output and return it
+        return ranges.trim();
+    }
+
+    private static int getPixelSize(String size, Element context) {
+        // Get the value and units from the size
+        RegExp regex = RegExp.compile("^(\\d+)?(\\.\\d+)?(.{1,3})", "i");
+        MatchResult match = regex.exec(size);
+
+        String val = "0";
+        if (match.getGroup(1) != null) {
+            val = match.getGroup(1);
+            if (match.getGroup(2) != null) {
+                val += match.getGroup(2);
+            }
+        }
+        String unit = match.getGroup(3).toLowerCase();
+
+        // Use a temporary measuring element to get the computed size of the
+        // relative units
+        if (unit.equals("em") || unit.equals("rem") || unit.equals("ex")
+                || unit.equals("ch")) {
+            Element measure = DOM.createDiv();
+            measure.getStyle().setProperty("width", size);
+            context.appendChild(measure);
+            int s = measure.getOffsetWidth();
+            context.removeChild(measure);
+            return s;
+        }
+        // Handle all other absolute units with basic math
+        int value = Integer.parseInt(val);
+        if (unit.equals("in")) {
+            return value * 96;
+        } else if (unit.equals("cm")) {
+            return (int) (value * 37.8);
+        } else if (unit.equals("mm")) {
+            return (int) (value * 3.78);
+        } else if (unit.equals("pt")) {
+            return (value * 96) / 72;
+        } else if (unit.equals("pc")) {
+            return ((value * 96) / 72) * 12;
+        }
+        return -1; // fail
+    }
+
+    private enum Dimension {
+        WIDTH, HEIGHT;
+    }
+
 }
