@@ -208,7 +208,8 @@ public class ResponsiveConnector extends AbstractExtensionConnector implements
     }
 
     private static boolean isIE() {
-        return Browser.getWindow().getNavigator().getAppName() == "Microsoft Internet Explorer";
+        return Browser.getWindow().getNavigator().getAppName()
+                .equals("Microsoft Internet Explorer");
     }
 
     /**
